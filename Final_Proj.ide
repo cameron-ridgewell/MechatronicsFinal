@@ -1,0 +1,275 @@
+/*
+  Cameron Ridgewell
+  ME 204 Mechatronics 
+  Final Project       */
+  
+  /*project inspired by, but not copied from, the work of: 
+   Steve Hoefer http://grathio.com
+   Version 0.1.10.20.10
+   Licensed under Creative Commons Attribution-Noncommercial-Share Alike 3.0 */
+
+//servo 90 degrees
+//practice reading in knock
+//read in servo starting position and set accordingly
+//use std::vector instead of an array?
+
+#include "utility.h"
+#include <Servo.h>
+#include <vector>
+
+//Pin Declarations
+const int redPin = 5;
+const int greenPin = 6;
+const int pushPin = 4;
+const int servoPin = 9;
+const int micPin = A1;
+
+//Establish parameters
+const int noise = 3;  //minimum value from piezo speaker to be registered as a knock
+const int percReject = 25; //how close any one knock needs to be not to be rejected
+const int avgPercReject = 15; //how close all the knocks need to be on average not to reject
+
+const int maxKnocks = 20;       // Maximum number of knocks to listen for.
+const int knockComplete = 1600;     // Longest time to wait for a knock before we assume that it's finished.
+
+Servo servo;
+
+// Variables.
+bool locked = true;
+int code[maxKnocks] = {50, 25, 25, 50, 100, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Initial setup: "Shave and a Hair Cut, two bits."
+int knockReadings[maxKnocks];   // array of most recent knock
+int micValue = 0;           // Last reading of the knock sensor
+int programming = false;   // Flag for programming
+
+void setup() { 
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT); 
+  
+  servo.attach(servoPin,900,1200);
+  servo.write(0);  //start out locked
+ 
+  pinMode(pushPin, INPUT);
+  pinMode(micPin, INPUT);
+  
+  // initialize serial communications at 9600 bps: 
+  Serial.begin(9600); 
+    
+  digitalWrite(greenPin, HIGH);
+} 
+
+void loop()
+{
+  // Listen for any knock at all.
+  micValue = analogRead(micPin);
+  //case 1, programming a new knock
+  if (digitalRead(pushPin)==HIGH)
+  {
+    programming = true;
+    digitalWrite(redPin, HIGH);
+  } 
+  //case 2, knocking to unlock
+  else 
+  {
+    programming = false;
+    digitalWrite(redPin, LOW);
+  }
+  
+  if (micValue >=noise){
+    knockListen();
+  }
+}
+
+void knockListen(void)
+{
+  Serial.println("Listening..."); 
+
+  for (int i = 0; i < maxKnocks; ++i)
+  {
+    knockReadings[i] = 0;
+  }
+
+  int knock = 0;
+  int start = millis(); //get current time
+  int now = millis(); //get current time
+
+  lightBlink(programming, both);
+  
+  do
+  {
+    micValue = analogRead(micPin);
+    //valid knock occurs
+    if (micValue >= noise)
+    {
+      Serial.println("knock");
+      now = millis();
+      knockReadings[knock++] = now - start; //get delay
+      start = now;  //reset timer
+
+      lightBlink(programming, both);
+    }
+    now = millis();
+  } while ((now - start < knockComplete) && (knock < maxKnocks));
+  
+  //check for valid input
+  if (!programming)
+  {
+    if(validate())  //check to see if input matches stroed value
+    {
+      lockAction(); //lock or unlock based on state
+      for (int i = 0; i < 4; ++i)
+      {
+        lightBlink(false, one);
+      }
+    }
+    else
+    {
+      Serial.println("Knock Failed!");
+      for (int i = 0; i < 4; ++i)
+      {
+        lightBlink(true, one);
+      }
+    }
+  }
+  //programming a new knock
+  else
+  {
+    validate();
+    Serial.println("Stored New Knock");
+    for (int i = 0; i < 4; ++i)
+    {
+      lightBlink(true, alternating);
+    }
+    digitalWrite(greenPin,HIGH);
+  }
+}
+
+void lightBlink(bool red, blinkType pattern)
+{ 
+  switch(pattern)
+  {
+    case one:
+      if(red)
+      {
+        digitalWrite(redPin, digitalRead(redPin) == HIGH ? LOW:HIGH);
+        delay(150);
+        digitalWrite(redPin, digitalRead(redPin) == HIGH ? LOW:HIGH);
+      }
+      else
+      {
+        digitalWrite(greenPin, digitalRead(greenPin) == HIGH ? LOW:HIGH);
+        delay(150);
+        digitalWrite(greenPin, digitalRead(greenPin) == HIGH ? LOW:HIGH);
+      }
+      break;
+    case both:
+      digitalWrite(greenPin, LOW);
+      if(red)
+        digitalWrite(redPin, LOW);
+      delay(250);
+      digitalWrite(greenPin, HIGH);
+      if(red)
+        digitalWrite(redPin, HIGH);
+      break;
+    case alternating:
+      digitalWrite(greenPin,HIGH);
+      digitalWrite(redPin,LOW);
+      delay(250);
+      digitalWrite(greenPin,LOW);
+      digitalWrite(redPin,HIGH);
+      delay(250);
+      break;
+    default:
+      Serial.println("Blinking error!");
+      break;
+  }
+}
+ 
+void lockAction(void)
+{
+  if(locked)
+  {
+    Serial.println("Unlocking...");
+    servo.write(110);
+    locked = false;
+  }
+  else
+  {
+    Serial.println("Locking...");
+    servo.write(0);
+    locked = true;
+  }
+}
+
+bool validate(void)
+{
+  int knockCount = 0;
+  int codeCount = 0;
+  int maxInterval = 0;
+
+  //find out how many knocks are in the secret code and in the input code
+  for (int i = 0; i < maxKnocks; ++i)
+  {
+    if(knockReadings[i] > 0)
+      ++knockCount;
+    if(code[i] > 0)
+      ++codeCount;
+    if(knockReadings[i] > maxInterval)
+      maxInterval = knockReadings[i];
+  }
+
+  //encode new knock
+  if (programming)
+  {
+    newKnock(maxInterval);
+    //to indicate that a new assignment was made, not an unlock
+    return false;
+  }
+
+  if (knockCount == codeCount)
+  {
+    //use map function to get relative times instead of absolute
+    int totaltime = 0;
+    int timeDiff = 0;
+    for (int i = 0; i < maxKnocks; ++i)
+    {
+      knockReadings[i] = map(knockReadings[i],0,maxInterval,0,100);
+      timeDiff = abs(knockReadings[i]-code[i]);
+      if (timeDiff > percReject)
+      {
+        return false;
+      }
+      totaltime += timeDiff;
+    }
+    if (totaltime/codeCount > avgPercReject)
+      return false;
+    return true;
+  }
+  return false;
+}
+
+void newKnock(int interval)
+{
+      for (int i = 0; i < maxKnocks; ++i)
+    {
+      code[i] = map(knockReadings[i],0,interval,0,100);  //compress time
+    }
+
+    //lets programmer know its successful
+    lightBlink(true, both);
+    digitalWrite(greenPin, LOW);
+    digitalWrite(redPin, LOW);
+    delay(1000);
+    for (int i = 0; i < maxKnocks; ++i)
+    {
+      digitalWrite(greenPin, LOW);
+      digitalWrite(redPin, LOW);
+      if (code[i] > 0)
+      {
+        delay(map(code[i],0,100,0,interval)); //put time back to normal
+        digitalWrite(greenPin, HIGH);
+        digitalWrite(redPin, HIGH);
+      }
+      delay(50);
+    }
+    Serial.println("New Knock Accepted!");
+}
